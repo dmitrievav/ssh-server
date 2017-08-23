@@ -1,0 +1,39 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: ssh-server
+  annotations:
+    description: "ssh server"
+  labels:
+    app: ssh-server
+  name: ssh-server
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ssh-server
+    spec:
+      containers:
+      - name: ssh-server
+        image: dmitrievav/ssh-server
+        ports:
+        - containerPort: 22
+          name: ssh-server-port
+        env:
+        - name: SSH_PUB_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ssh-pub-key
+              key: id_rsa.pub
+      # it does not work due wrong permissions
+      #   volumeMounts:
+      #   - mountPath: /root/.ssh
+      #     name: ssh-pub-key
+      # volumes:
+      # - name: ssh-pub-key
+      #   secret:
+      #     secretName: ssh-pub-key
+      #     items:
+      #     - key: id_rsa.pub
+      #       path: authorized_keys
