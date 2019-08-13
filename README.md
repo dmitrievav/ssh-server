@@ -1,87 +1,99 @@
-# ssh-server docker image
+# Kubernetes ssh port forwarding
 
-You can use this docker image as you want.
-But initially it was supposed to be used on top of kubernetes,
-to ssh in kubernetes nodes without using any real bastion host.
+Here is an example of forwarding localhost port to MYSQL RDS port via k8s POD, but could be whatever you want.
 
-## 1. Create a namespace:
-
-```
-kubectl get namespace ssh-server 2>/dev/null || \
-kubectl create namespace ssh-server
-```
-
-## 2. Create a secret:
+## Create a secret:
 
 ```
 kubectl create secret generic ssh-pub-key \
---from-file=${HOME}/.ssh/id_rsa.pub \
--n ssh-server
+--from-file=${HOME}/.ssh/id_rsa.pub
 ```
 
-## 3. Deploy ssh server:
+## Deploy ssh server:
 
 ```
-kubectl create -f k8s.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  annotations:
+    description: "ssh server"
+  labels:
+    app: ssh-server
+  name: ssh-server
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ssh-server
+    spec:
+      containers:
+      - name: ssh-server
+        image: dmitrievav/ssh-server
+        ports:
+        - containerPort: 22
+          name: ssh-server-port
+        env:
+        - name: SSH_PUB_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ssh-pub-key
+              key: id_rsa.pub
+EOF
+
 ```
 
-## 4. List kubernetes node ip addresses:
+## Redirect ssh port via kubernetes api to local host:
 
-```
-kubectl get nodes \
--L failure-domain.beta.kubernetes.io/zone,kubernetes.io/role -o wide | \
-tr "-" "." | \
-sed -E 's/ip\.(([0-9]+\.){4,4}).*internal/\1/' | \
-sed -E 's/\. / /'
-```
-
-## 5. Make ssh tunnel via kubernetes api
+Run in separate console
 
 ```
 while true; do \
-    kubectl port-forward \
-    $(kubectl get pods -n ssh-server | grep ssh-server | awk '{print $1}') \
-    10022:22 -n ssh-server; \
+    kubectl port-forward $(kubectl get pod -l app=ssh-server -o jsonpath='{.items[0].metadata.name}') 2222:22; \
     sleep 1; \
 done
 ```
 
-## 6. Prepare ~/.ssh/config
+## Make ssh tunnel to RDS via ssh server and map it to local host 3306
 
-It is an example, you have substitute all IPs.
-
-```
-Host k8s-staging-bastion
-    HostName 127.0.0.1
-    User root
-    port 10022
-
-Host k8s-staging-master-a
-    HostName 10.8.201.123
-
-Host k8s-staging-master-b
-    HostName 10.8.202.139
-
-Host k8s-staging-master-c
-    HostName 10.8.203.152
-
-Host k8s-staging-node-a
-    HostName 10.8.201.196
-
-Host k8s-staging-node-b
-    HostName 10.8.202.231
-
-Host k8s-staging-node-c
-    HostName 10.8.203.31
-
-Host k8s-staging-* !k8s-staging-bastion
-    ProxyCommand ssh -q -a -k -x -W %h:%p k8s-staging-bastion
-    IdentityFile ~/.ssh/id_rsa.pub
-    User admin
-```
-
-## 7. Now you can ssh like:
+Run in separate console
 
 ```
-ssh k8s-staging-node-a
+while true; do \
+    lsof -Pni :3306 > /dev/null 2>&1 || ssh root@127.0.0.1 -p 2222 -f -N \
+    -L 3306:REDACTED.eu-central-1.rds.amazonaws.com:3306
+    sleep 1; \
+done
+```
+
+## Copy sql file to current folder
+
+```
+ls -1
+db_dump-20190529.sql
+```
+
+## Import sql files to remote DB
+
+```
+docker run --name=mysql-client \
+  -it \
+  -v $(PWD):/tmp \
+  --rm mysql \
+    sh -c " \
+      apt-get update; \
+      apt-get install pv; \
+      pv /tmp/db_dump-20190529.sql | \
+      mysql \
+        -hhost.docker.internal \
+        -uaccesscontrol -Daccesscontrol -psome_password
+    "
+```
+
+## Clean up
+
+```
+kubectl delete deployment ssh-server
+kubectl delete secret ssh-pub-key
 ```
